@@ -29,7 +29,7 @@ BluePulse 是一套由两个程序组成的系统：Windows 电脑上的指标�
 ## 2. 总体架构
 
 ```
-┌─────────────────────┐   BLE GATT (Notify)   ┌──────────────────────┐
+┌─────────────────────┐  BLE GATT (Write, Notify保留)  ┌──────────────────────┐
 │  Windows 采集端      │ ────────────────────▶ │  ESP32-S3 固件        │
 │  BluePulseHost.exe  │    JSON 数据包         │  1.54" 触摸屏仪表盘   │
 │  (C# .NET Fx 4.8)   │ ◀──────────────────── │  (ESP-IDF, C)        │
@@ -56,8 +56,8 @@ BluePulse 是一套由两个程序组成的系统：Windows 电脑上的指标�
 - **设备名**：`BluePulse`（广播名与 GATT Generic Access 一致）。
 - **服务 UUID**：自定义 128-bit，`6E40FE10-B5A3-F393-E0A9-E50E24DCCA9E`（沿用 Nordic UART 风格的基座，避免与标准服务冲突）。
 - **特征值**：
-  - `6E40FE11-...`（Notify）：电脑端订阅后接收数据帧。
-  - `6E40FE12-...`（Write，保留）：第一版不使用，仅预留协议扩展位。
+  - `6E40FE11-...`（Write Without Response）：电脑端向设备写入数据帧（数据流方向为电脑→设备）。
+  - `6E40FE12-...`（Notify，保留）：第一版不使用，仅预留协议扩展位。
 - **MTU**：连接建立后协商至 247 字节；每包有效载荷 ≤ 244 字节（3 字节 ATT 头开销）。
 
 ### 4.2 分包格式
@@ -110,7 +110,7 @@ BluePulse 是一套由两个程序组成的系统：Windows 电脑上的指标�
 |---|---|---|
 | `MetricsCollector` | 每秒采集一轮指标，输出指标对象 | `PerformanceCounter`（CPU/内存/磁盘/网络）、LibreHardwareMonitor（温度/频率/GPU）、NVML（N 卡，可选） |
 | `JsonFrameBuilder` | 指标对象 → 协议 JSON → 分包字节数组 | 内置序列化（手写或轻量库，避免大依赖） |
-| `BleSender` | 扫描、连接、订阅 Notify、发包、重连 | Windows.Devices.Bluetooth（WinRT API，经 CsWinRT 引用） |
+| `BleSender` | 扫描、连接、向 Write 特征值发包、重连 | Windows.Devices.Bluetooth（经 Microsoft.Windows.SDK.Contracts 引用） |
 | `TrayUI` | 托盘图标（连接状态着色）、右键菜单：立即重连/退出 | `NotifyIcon` |
 | `AppLifetime` | 单实例互斥、启动参数、错误日志 | — |
 
@@ -192,7 +192,7 @@ E:\BluePulse\
 | 电脑端协议逻辑 | 单元测试：JSON 帧构建、分包/重组、字段省略规则 |
 | 电脑端采集 | 手动验证：对照任务管理器数值 |
 | 设备端协议解析 | `protocol.c` 做成纯函数，用 host 端测试或设备端断言测试覆盖拼帧/丢帧/超时 |
-| BLE 链路 | 联调前用手机 nRF Connect 订阅验证电脑端发包；用电脑端连接"假设备"验证扫描连接 |
+| BLE 链路 | 联调前用手机 nRF Connect 模拟外设（配置同名服务与 Write 特征值）验证电脑端发包；用电脑端连接"假设备"验证扫描连接 |
 | UI | 真机验证：三页切换、断连状态、插值动画 |
 | 端到端 | 真实电脑 + 真实设备连续运行 24 小时无重启、无内存泄漏（heap 水位日志） |
 
