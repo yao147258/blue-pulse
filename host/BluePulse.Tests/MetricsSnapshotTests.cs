@@ -39,6 +39,16 @@ namespace BluePulse.Tests
         }
 
         [Test]
+        public void NetDiskCollector_采样后_磁盘列表非空且含系统盘()
+        {
+            var c = new NetDiskCollector();
+            c.SampleOnce();
+            Assert.IsNotEmpty(c.Current.Disks);
+            // 简报原文用 DriveLetter；现有 DiskInfo 结构以 Name 存盘符小写字母，故此处用 Name
+            Assert.IsTrue(c.Current.Disks.Exists(d => d.Name == "c"));
+        }
+
+        [Test]
         public void HardwareCollector_打开后_能读取CPU负载()
         {
             var c = new HardwareCollector();
