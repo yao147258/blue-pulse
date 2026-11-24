@@ -416,60 +416,94 @@ namespace BluePulseHost.Ble
                 throw new InvalidOperationException("无法连接设备 " + localName);
             }
 
-            // 2. 按 UUID 获取服务
-            var servicesResult = await WaitForResultAsync(
-                device.GetGattServicesForUuidAsync(ServiceUuid,
-                    BluetoothCacheMode.Uncached));
-            if (servicesResult.Status != GattCommunicationStatus.Success ||
-                servicesResult.Services.Count == 0)
-            {
-                device.Dispose();
-                throw new InvalidOperationException(
-                    "未找到服务 " + ServiceUuidString + "（" + servicesResult.Status + "）");
-            }
-            var service = servicesResult.Services[0];
-
-            // 3. 在服务下找 WriteWithoutResponse 特征
-            var charsResult = await WaitForResultAsync(
-                service.GetCharacteristicsForUuidAsync(WriteCharUuid,
-                    BluetoothCacheMode.Uncached));
-            if (charsResult.Status != GattCommunicationStatus.Success ||
-                charsResult.Characteristics.Count == 0)
-            {
-                device.Dispose();
-                throw new InvalidOperationException(
-                    "未找到特征 " + WriteCharUuidString + "（" + charsResult.Status + "）");
-            }
-
-            var writeChar = charsResult.Characteristics[0];
-            if ((writeChar.CharacteristicProperties &
-                 GattCharacteristicProperties.WriteWithoutResponse) == 0)
-            {
-                device.Dispose();
-                throw new InvalidOperationException("特征不支持 WriteWithoutResponse");
-            }
-
-            // 4. 建立 GATT 会话并保持连接
-            var session = await WaitForResultAsync(
-                GattSession.FromDeviceIdAsync(device.BluetoothDeviceId));
-            if (session != null)
-            {
-                session.MaintainConnection = true;
-                AppLog.Info("GATT 会话已建立，MaxPduSize=" + session.MaxPduSize);
-            }
-
-            // 5. 登记：订阅断连事件后一次性写入各字段
+            // 提前登记到 _device 并订阅断连事件：后续任何一步失败（包括 GattSession
+            // 创建抛异常），调用方的 TeardownDevice 都能兜底释放设备，避免泄漏
             device.ConnectionStatusChanged += OnConnectionStatusChanged;
             lock (_sync)
             {
                 _device = device;
-                _session = session;
-                _writeChar = writeChar;
-                _backoffSeconds = 1; // 连接成功重置退避
             }
 
-            SetStatus("已连接");
-            AppLog.Info("BLE 已连接：" + localName);
+            try
+            {
+                // 2. 按 UUID 获取服务（失败不在此处 Dispose 设备，统一由 TeardownDevice 兜底）
+                var servicesResult = await WaitForResultAsync(
+                    device.GetGattServicesForUuidAsync(ServiceUuid,
+                        BluetoothCacheMode.Uncached));
+                if (servicesResult.Status != GattCommunicationStatus.Success ||
+                    servicesResult.Services.Count == 0)
+                {
+                    throw new InvalidOperationException(
+                        "未找到服务 " + ServiceUuidString + "（" + servicesResult.Status + "）");
+                }
+                var service = servicesResult.Services[0];
+
+                // 3. 在服务下找 WriteWithoutResponse 特征
+                var charsResult = await WaitForResultAsync(
+                    service.GetCharacteristicsForUuidAsync(WriteCharUuid,
+                        BluetoothCacheMode.Uncached));
+                if (charsResult.Status != GattCommunicationStatus.Success ||
+                    charsResult.Characteristics.Count == 0)
+                {
+                    throw new InvalidOperationException(
+                        "未找到特征 " + WriteCharUuidString + "（" + charsResult.Status + "）");
+                }
+
+                var writeChar = charsResult.Characteristics[0];
+                if ((writeChar.CharacteristicProperties &
+                     GattCharacteristicProperties.WriteWithoutResponse) == 0)
+                {
+                    throw new InvalidOperationException("特征不支持 WriteWithoutResponse");
+                }
+
+                // 4. 建立 GATT 会话并保持连接
+                var session = await WaitForResultAsync(
+                    GattSession.FromDeviceIdAsync(device.BluetoothDeviceId));
+                if (session != null)
+                {
+                    session.MaintainConnection = true;
+                    AppLog.Info("GATT 会话已建立，MaxPduSize=" + session.MaxPduSize);
+                }
+
+                // 5. 登记：锁内复查 _started，Stop 之后到达这里的连接不得"复活"
+                lock (_sync)
+                {
+                    if (!_started)
+                    {
+                        // 已 Stop：不登记任何字段，把设备/会话就地释放，避免僵尸连接。
+                        // Stop() 的 TeardownDevice 可能已并发释放过，故整体 try/catch 兜底
+                        _device = null; // 清掉提前登记的引用，防止 TeardownDevice 重复释放
+                        try
+                        {
+                            device.ConnectionStatusChanged -= OnConnectionStatusChanged;
+                            if (session != null)
+                            {
+                                session.MaintainConnection = false;
+                                session.Dispose();
+                            }
+                            device.Dispose();
+                        }
+                        catch (Exception ex)
+                        {
+                            AppLog.Error("放弃已停止的连接时释放资源失败", ex);
+                        }
+                        AppLog.Info("连接完成时发送端已停止，放弃该连接");
+                        return;
+                    }
+
+                    _session = session;
+                    _writeChar = writeChar;
+                    _backoffSeconds = 1; // 连接成功重置退避
+                }
+
+                SetStatus("已连接");
+                AppLog.Info("BLE 已连接：" + localName);
+            }
+            catch
+            {
+                // 设备已提前登记到 _device，交给调用方的 TeardownDevice 统一释放
+                throw;
+            }
         }
 
         /// <summary>设备断连回调：清理并按退避重连</summary>
@@ -489,6 +523,7 @@ namespace BluePulseHost.Ble
             if (needReconnect)
             {
                 AppLog.Info("BLE 连接已断开，准备重连");
+                SetStatus("扫描中"); // 立即刷新状态，避免托盘滞留"已连接"
                 TeardownDevice();
                 RescheduleRetry();
             }
@@ -508,6 +543,7 @@ namespace BluePulseHost.Ble
 
             if (needReconnect)
             {
+                SetStatus("扫描中"); // 立即刷新状态，避免托盘滞留"已连接"
                 TeardownDevice();
                 RescheduleRetry();
             }
@@ -518,12 +554,23 @@ namespace BluePulseHost.Ble
         // ------------------------------------------------------------------
 
         /// <summary>按当前退避秒数安排下一次连接尝试，并使退避翻倍（封顶 30s）。
+        /// 已有重连定时器在途时跳过（断连与写失败可能并发触发，避免退避多翻倍）。
         /// 不在此处改状态：状态由各触发方自行设置（适配器不可用须保持该状态）。</summary>
         private void RescheduleRetry()
         {
             int delaySeconds;
             lock (_sync)
             {
+                if (!_started)
+                {
+                    return; // 已停止，不再安排重试
+                }
+
+                if (_retryTimer != null && _retryTimer.Enabled)
+                {
+                    return; // 已有待触发的重连，跳过本次重复调度
+                }
+
                 delaySeconds = _backoffSeconds;
                 _backoffSeconds = Math.Min(_backoffSeconds * 2, MaxBackoffSeconds);
             }
