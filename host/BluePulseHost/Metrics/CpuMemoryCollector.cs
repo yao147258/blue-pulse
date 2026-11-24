@@ -78,7 +78,8 @@ namespace BluePulseHost.Metrics
                 {
                     float usedKb = (float)totalKb - availMb * 1024f;
                     s.MemUsedGb = (float)Math.Round(Math.Max(usedKb, 0) / 1024.0 / 1024.0, 1);
-                    s.MemPct = Clamp(s.MemTotalGb > 0 ? usedKb / (float)(totalKb / 1024.0 / 1024.0) * 100f : 0);
+                    // 使用率 = 已用 KB / 总量 KB * 100（两者同为 KB 单位）
+                    s.MemPct = Clamp(totalKb > 0 ? usedKb / (float)totalKb * 100f : 0);
                 }
                 else
                 {

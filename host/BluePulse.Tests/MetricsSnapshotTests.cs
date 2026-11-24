@@ -25,5 +25,17 @@ namespace BluePulse.Tests
             Assert.LessOrEqual(s.CpuLoad, 100);
             Assert.Greater(s.MemTotalGb, 0);
         }
+
+        [Test]
+        public void CpuMemoryCollector_采样后_MemPct在合法区间()
+        {
+            var c = new CpuMemoryCollector();
+            c.SampleOnce(); c.SampleOnce();   // PerformanceCounter 需要两次采样
+            var s = c.Current;
+            Assert.GreaterOrEqual(s.MemPct, 0);
+            Assert.LessOrEqual(s.MemPct, 100);
+            // 物理机内存使用率不会恒等于 100，用于防止单位换算错误（KB/GB 比值放大后恒被截为 100）
+            Assert.Less(s.MemPct, 100);
+        }
     }
 }
