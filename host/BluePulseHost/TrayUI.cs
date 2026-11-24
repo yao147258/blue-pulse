@@ -1,5 +1,6 @@
 using System;
 using System.Drawing;
+using System.Runtime.InteropServices;
 using System.Windows.Forms;
 
 namespace BluePulseHost
@@ -11,6 +12,13 @@ namespace BluePulseHost
     /// </summary>
     internal class TrayUI : IDisposable
     {
+        /// <summary>
+        /// 销毁图标句柄（GetHicon 返回的 HICON 不归 Icon 对象管，必须手动销毁，否则句柄泄漏）
+        /// </summary>
+        [DllImport("user32.dll", SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        private static extern bool DestroyIcon(IntPtr hIcon);
+
         /// <summary>状态文本提供者（每次显示菜单/提示时调用）</summary>
         private readonly Func<string> _getStatus;
 
@@ -31,6 +39,9 @@ namespace BluePulseHost
 
         /// <summary>当前图标颜色</summary>
         private Color _currentColor = Color.Gray;
+
+        /// <summary>当前图标原始 HICON（由 GetHicon 产生，需用 DestroyIcon 销毁）</summary>
+        private IntPtr _currentHIcon = IntPtr.Zero;
 
         /// <summary>
         /// 构造托盘 UI
@@ -61,10 +72,11 @@ namespace BluePulseHost
             exitItem.Click += OnExitClick;
             _menu.Items.Add(exitItem);
 
-            // 托盘图标：动态画一个灰色圆点起步
+            // 托盘图标：动态画一个灰色圆点起步（记录 HICON 以便销毁）
+            _currentHIcon = MakeIcon(_currentColor);
             _notifyIcon = new NotifyIcon
             {
-                Icon = MakeIcon(_currentColor),
+                Icon = Icon.FromHandle(_currentHIcon),
                 Text = "BluePulse",
                 ContextMenuStrip = _menu,
                 Visible = true
@@ -89,17 +101,30 @@ namespace BluePulseHost
             if (color != _currentColor)
             {
                 _currentColor = color;
-                // NotifyIcon.Icon 每次替换为新实例，旧的及时释放，避免句柄泄漏
-                var oldIcon = _notifyIcon.Icon;
-                _notifyIcon.Icon = MakeIcon(color);
-                if (oldIcon != null)
-                {
-                    oldIcon.Dispose();
-                }
+                // 替换图标：先记录旧 HICON，换上新图标后再销毁旧句柄。
+                // Icon.FromHandle 的包装器不拥有句柄，其 Dispose 不会销毁 HICON，
+                // 因此必须在这里 P/Invoke DestroyIcon，否则每次切换都泄漏一个句柄。
+                IntPtr oldHIcon = _currentHIcon;
+                _currentHIcon = MakeIcon(color);
+                _notifyIcon.Icon = Icon.FromHandle(_currentHIcon);
+                DestroyOldIcon(oldHIcon);
             }
 
             // 托盘提示最多 63 个字符，超长截断
             _notifyIcon.Text = text.Length > 63 ? text.Substring(0, 63) : text;
+
+            // 同步更新右键菜单里的状态文本项，保证菜单与图标/提示一致
+            _statusItem.Text = text;
+        }
+
+        /// <summary>安全销毁旧的 HICON（忽略销毁失败）</summary>
+        /// <param name="hIcon">要销毁的图标句柄</param>
+        private static void DestroyOldIcon(IntPtr hIcon)
+        {
+            if (hIcon != IntPtr.Zero)
+            {
+                DestroyIcon(hIcon);
+            }
         }
 
         /// <summary>更新菜单里的状态文本项</summary>
@@ -113,8 +138,8 @@ namespace BluePulseHost
         /// 用 System.Drawing 动态生成 16x16 圆点图标（不需要图标资源文件）
         /// </summary>
         /// <param name="color">圆点颜色</param>
-        /// <returns>生成的图标</returns>
-        private static Icon MakeIcon(Color color)
+        /// <returns>原始 HICON（GetHicon 产生，调用方负责用 DestroyIcon 销毁）</returns>
+        private static IntPtr MakeIcon(Color color)
         {
             using (var bmp = new Bitmap(16, 16))
             using (var g = Graphics.FromImage(bmp))
@@ -127,7 +152,8 @@ namespace BluePulseHost
                     // 留 1px 边距画 14x14 的实心圆
                     g.FillEllipse(brush, 1, 1, 14, 14);
                 }
-                return Icon.FromHandle(bmp.GetHicon());
+                // GetHicon 返回的 HICON 归调用方管，记录句柄以便销毁
+                return bmp.GetHicon();
             }
         }
 
@@ -172,14 +198,12 @@ namespace BluePulseHost
             {
                 _notifyIcon.Visible = false;
                 _notifyIcon.MouseMove -= OnIconMouseMove;
-                var icon = _notifyIcon.Icon;
                 _notifyIcon.Icon = null;
-                if (icon != null)
-                {
-                    icon.Dispose();
-                }
                 _notifyIcon.Dispose();
             }
+            // 销毁最后一个图标的 HICON（Icon.FromHandle 的包装器不拥有它）
+            DestroyOldIcon(_currentHIcon);
+            _currentHIcon = IntPtr.Zero;
             if (_menu != null)
             {
                 _menu.Dispose();
