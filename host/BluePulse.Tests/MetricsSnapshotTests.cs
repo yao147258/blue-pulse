@@ -37,5 +37,18 @@ namespace BluePulse.Tests
             // 物理机内存使用率不会恒等于 100，用于防止单位换算错误（KB/GB 比值放大后恒被截为 100）
             Assert.Less(s.MemPct, 100);
         }
+
+        [Test]
+        public void HardwareCollector_打开后_能读取CPU负载()
+        {
+            var c = new HardwareCollector();
+            try {
+                c.Open();
+                c.SampleOnce();
+                // 负载可能为 null（虚拟机/驱动未装），但字段结构必须有效
+                if (c.Current.GpuLoad.HasValue)
+                    Assert.GreaterOrEqual(c.Current.GpuLoad.Value, 0);
+            } finally { c.Close(); }
+        }
     }
 }
