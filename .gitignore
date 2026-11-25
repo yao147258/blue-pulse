@@ -1,0 +1,15 @@
+# IDE 配置
+.idea/
+
+# ESP-IDF 安装器生成的本机路径配置（含个人安装路径，不入库）
+eim_config.toml
+
+# 子代理驱动开发的临时工作区（台账、简报、审查包）
+.superpowers/
+
+# 固件构建产物与本地配置
+firmware/build/
+firmware/sdkconfig
+firmware/sdkconfig.old
+firmware/managed_components/
+firmware/dependencies.lock
